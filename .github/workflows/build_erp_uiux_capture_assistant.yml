@@ -1,0 +1,85 @@
+name: Build ERP UIUX Capture Assistant Windows
+
+on:
+  push:
+    branches:
+      - build/erp-uiux-capture-assistant
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Decode source payload
+        shell: pwsh
+        run: |
+          $payload = (Get-Content 'erp_capture_assistant/source_payload.b64' -Raw).Trim()
+          [IO.File]::WriteAllBytes('erp_capture_assistant/source_payload.zip', [Convert]::FromBase64String($payload))
+          Expand-Archive -Path 'erp_capture_assistant/source_payload.zip' -DestinationPath 'erp_capture_assistant/src' -Force
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r erp_capture_assistant/src/requirements-build.txt
+
+      - name: Build Windows EXE
+        shell: pwsh
+        working-directory: erp_capture_assistant/src
+        run: |
+          pyinstaller --clean --noconfirm erp_uiux_capture_assistant.spec
+          if (-not (Test-Path 'dist/ERP_UIUX_CAPTURE_ASSISTANT.exe')) { throw 'EXE was not built.' }
+
+      - name: Windows runner smoke test
+        shell: pwsh
+        working-directory: erp_capture_assistant/src
+        run: |
+          $process = Start-Process -FilePath 'dist/ERP_UIUX_CAPTURE_ASSISTANT.exe' -ArgumentList '--self-test' -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Self-test failed with exit code $($process.ExitCode)" }
+          if (-not (Test-Path 'dist/WINDOWS_RUNNER_TEST_REPORT.txt')) { throw 'Self-test report missing.' }
+          Get-Content 'dist/WINDOWS_RUNNER_TEST_REPORT.txt'
+
+      - name: Assemble delivery package
+        shell: pwsh
+        working-directory: erp_capture_assistant/src
+        run: |
+          $package = 'ERP_UIUX_CAPTURE_ASSISTANT_GLOBAL_SHELL_V1'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          New-Item -ItemType Directory -Force -Path "$package/prototype" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$package/logs" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$package/output" | Out-Null
+          Copy-Item 'dist/ERP_UIUX_CAPTURE_ASSISTANT.exe' "$package/ERP_UIUX_CAPTURE_ASSISTANT.exe"
+          Copy-Item 'dist/WINDOWS_RUNNER_TEST_REPORT.txt' "$package/WINDOWS_RUNNER_TEST_REPORT.txt"
+          Copy-Item 'KRATKO_UPUTSTVO.txt' "$package/KRATKO_UPUTSTVO.txt"
+          Copy-Item 'PROTOTYPE_INFO.txt' "$package/prototype/PROTOTYPE_INFO.txt"
+          Set-Content -Path "$package/logs/README.txt" -Value 'Technical logs will appear here after the application runs.' -Encoding utf8
+          Set-Content -Path "$package/output/README.txt" -Value 'PRE, CODE-TRUE and comparison images will appear here.' -Encoding utf8
+          $exeHash = (Get-FileHash "$package/ERP_UIUX_CAPTURE_ASSISTANT.exe" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "$package/EXE_SHA256.txt" -Value "$exeHash  ERP_UIUX_CAPTURE_ASSISTANT.exe" -Encoding ascii
+          Compress-Archive -Path "$package/*" -DestinationPath 'ERP_UIUX_CAPTURE_ASSISTANT_GLOBAL_SHELL_V1.zip' -Force
+          $zipHash = (Get-FileHash 'ERP_UIUX_CAPTURE_ASSISTANT_GLOBAL_SHELL_V1.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path 'PACKAGE_SHA256.txt' -Value "$zipHash  ERP_UIUX_CAPTURE_ASSISTANT_GLOBAL_SHELL_V1.zip" -Encoding ascii
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ERP_UIUX_CAPTURE_ASSISTANT_GLOBAL_SHELL_V1
+          path: |
+            erp_capture_assistant/src/ERP_UIUX_CAPTURE_ASSISTANT_GLOBAL_SHELL_V1.zip
+            erp_capture_assistant/src/PACKAGE_SHA256.txt
+          if-no-files-found: error
+          retention-days: 7
