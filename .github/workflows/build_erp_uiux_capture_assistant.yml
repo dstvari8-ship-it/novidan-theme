@@ -27,12 +27,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Decode source payload
+      - name: Decode and verify source payload
         shell: pwsh
         run: |
-          $payload = (Get-Content 'erp_capture_assistant/source_payload.b64' -Raw).Trim()
-          [IO.File]::WriteAllBytes('erp_capture_assistant/source_payload.zip', [Convert]::FromBase64String($payload))
-          Expand-Archive -Path 'erp_capture_assistant/source_payload.zip' -DestinationPath 'erp_capture_assistant/src' -Force
+          $parts = Get-ChildItem 'erp_capture_assistant/payload_parts/part_*.txt' | Sort-Object Name
+          if ($parts.Count -ne 7) { throw "Expected 7 payload parts, found $($parts.Count)." }
+          $payload = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $zipPath = 'erp_capture_assistant/source_payload.zip'
+          [IO.File]::WriteAllBytes($zipPath, [Convert]::FromBase64String($payload))
+          $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = '4033319c256315daf31000d78c6ae35af23d86ef60f04a56fe59b0b159e7138c'
+          if ($actual -ne $expected) { throw "Payload SHA-256 mismatch. Expected $expected, got $actual." }
+          Expand-Archive -Path $zipPath -DestinationPath 'erp_capture_assistant/src' -Force
+          python -m py_compile erp_capture_assistant/src/erp_uiux_capture_assistant.py
 
       - name: Install build dependencies
         shell: pwsh
